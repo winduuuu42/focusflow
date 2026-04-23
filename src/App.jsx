@@ -36,10 +36,31 @@ const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS     = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTHS_SH  = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-function genId()     { return Math.random().toString(36).slice(2,9); }
+function genId()        { return Math.random().toString(36).slice(2,9); }
 function isSameDay(a,b) { return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate(); }
-function formatTime(t) { if(!t)return""; const[h,m]=t.split(":").map(Number); return`${h%12||12}:${String(m).padStart(2,"0")} ${h>=12?"PM":"AM"}`; }
-function dateStr(d)  { return d.toISOString().slice(0,10); }
+function formatTime(t)  { if(!t)return""; const[h,m]=t.split(":").map(Number); return`${h%12||12}:${String(m).padStart(2,"0")} ${h>=12?"PM":"AM"}`; }
+function dateStr(d)     { return d.toISOString().slice(0,10); }
+
+// Simple hash for password storage (not cryptographic — for demo purposes)
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash.toString(36);
+}
+
+// localStorage helpers
+const LS = {
+  getUsers:    ()    => JSON.parse(localStorage.getItem("ff_users") || "{}"),
+  saveUsers:   (u)   => localStorage.setItem("ff_users", JSON.stringify(u)),
+  getSession:  ()    => localStorage.getItem("ff_session"),
+  saveSession: (uid) => localStorage.setItem("ff_session", uid),
+  clearSession:()    => localStorage.removeItem("ff_session"),
+  getEvents:   (uid) => JSON.parse(localStorage.getItem(`ff_events_${uid}`) || "null"),
+  saveEvents:  (uid, evs) => localStorage.setItem(`ff_events_${uid}`, JSON.stringify(evs)),
+};
 
 function occursOn(ev, d) {
   const base  = new Date(ev.date + "T00:00:00");
@@ -57,23 +78,29 @@ function eventsForDay(events, d) {
   return events.filter(ev=>occursOn(ev,d)).sort((a,b)=>a.time.localeCompare(b.time));
 }
 
-// Returns ms until the next occurrence of ev from now
 function msUntil(ev) {
   const now = new Date();
-  const todayStr = dateStr(now);
-  // check today first
   for (let i=0; i<365; i++) {
     const d = new Date(now); d.setDate(now.getDate()+i);
     if (occursOn(ev, d)) {
       const dt = new Date(dateStr(d)+"T"+(ev.time||"00:00")+":00");
       if (dt > now) return dt - now;
-      if (i>0) return dt - now; // future day, any time counts
+      if (i>0) return dt - now;
     }
   }
   return Infinity;
 }
 
-/* ── Shared UI ── */
+function formatCountdown(ms) {
+  if (ms<=0) return "Now";
+  const s=Math.floor(ms/1000), d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60), sec=s%60;
+  if (d>0) return `${d}d ${h}h`;
+  if (h>0) return `${h}h ${m}m`;
+  if (m>0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+/* ── UI Primitives ── */
 function Badge({ color, children }) {
   return <span style={{ background:color+"22",color,border:`1px solid ${color}44`,borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700 }}>{children}</span>;
 }
@@ -88,7 +115,7 @@ function Modal({ open, onClose, title, children }) {
       <div onClick={e=>e.stopPropagation()} style={{ background:COLORS.card,border:`1px solid ${COLORS.border}`,borderRadius:16,padding:28,width:"100%",maxWidth:480,boxShadow:"0 24px 64px #00000088",maxHeight:"90vh",overflowY:"auto" }}>
         <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20 }}>
           <span style={{ fontFamily:"'Playfair Display',serif",fontSize:20,color:COLORS.text,fontWeight:700 }}>{title}</span>
-          <button onClick={onClose} style={{ background:"none",border:"none",color:COLORS.textMuted,fontSize:22,cursor:"pointer" }}>×</button>
+          {onClose && <button onClick={onClose} style={{ background:"none",border:"none",color:COLORS.textMuted,fontSize:22,cursor:"pointer" }}>×</button>}
         </div>
         {children}
       </div>
@@ -146,6 +173,117 @@ function EventCard({ ev, onClick, onToggle }) {
   );
 }
 
+/* ── Auth Screen ── */
+function AuthScreen({ onLogin }) {
+  const [mode, setMode]       = useState("login"); // "login" | "signup"
+  const [name, setName]       = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError]     = useState("");
+
+  function handleSubmit() {
+    setError("");
+    const users = LS.getUsers();
+
+    if (mode === "signup") {
+      if (!name.trim())           return setError("Please enter your name.");
+      if (username.trim().length < 3) return setError("Username must be at least 3 characters.");
+      if (password.length < 6)   return setError("Password must be at least 6 characters.");
+      if (password !== confirm)   return setError("Passwords don't match.");
+      if (users[username.toLowerCase()]) return setError("That username is already taken.");
+
+      const uid = username.toLowerCase();
+      users[uid] = { uid, name: name.trim(), username: uid, password: simpleHash(password), createdAt: new Date().toISOString() };
+      LS.saveUsers(users);
+      LS.saveSession(uid);
+      onLogin(users[uid]);
+    } else {
+      const uid = username.toLowerCase();
+      const user = users[uid];
+      if (!user)                          return setError("No account found with that username.");
+      if (user.password !== simpleHash(password)) return setError("Incorrect password.");
+      LS.saveSession(uid);
+      onLogin(user);
+    }
+  }
+
+  const inputStyle = { width:"100%", background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:10, padding:"11px 14px", color:COLORS.text, fontSize:15, outline:"none", boxSizing:"border-box", fontFamily:"inherit" };
+
+  return (
+    <div style={{ minHeight:"100vh", background:COLORS.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:20, fontFamily:"'DM Sans',sans-serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+
+      <div style={{ width:"100%", maxWidth:420 }}>
+        {/* Logo */}
+        <div style={{ textAlign:"center", marginBottom:36 }}>
+          <div style={{ fontFamily:"'Playfair Display',serif", fontSize:32, marginBottom:6 }}>
+            <span style={{ color:COLORS.accent }}>◆</span> FocusFlow
+          </div>
+          <div style={{ fontSize:14, color:COLORS.textMuted }}>Your personal productivity hub</div>
+        </div>
+
+        {/* Card */}
+        <div style={{ background:COLORS.card, border:`1px solid ${COLORS.border}`, borderRadius:20, padding:32, boxShadow:"0 24px 64px #00000066" }}>
+          {/* Tab toggle */}
+          <div style={{ display:"flex", background:COLORS.surface, borderRadius:10, padding:4, marginBottom:26 }}>
+            {["login","signup"].map(m=>(
+              <button key={m} onClick={()=>{ setMode(m); setError(""); }} style={{ flex:1, padding:"8px", borderRadius:7, border:"none", fontFamily:"inherit", fontSize:14, fontWeight:600, cursor:"pointer", background:mode===m?COLORS.accent:"transparent", color:mode===m?"#fff":COLORS.textMuted, transition:"all 0.18s" }}>
+                {m==="login"?"Log In":"Sign Up"}
+              </button>
+            ))}
+          </div>
+
+          {mode==="signup" && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:11,color:COLORS.textMuted,marginBottom:6,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase" }}>Your Name</div>
+              <input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Maria Santos" style={inputStyle}/>
+            </div>
+          )}
+
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:11,color:COLORS.textMuted,marginBottom:6,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase" }}>Username</div>
+            <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. mariasantos" style={inputStyle} autoCapitalize="none"/>
+          </div>
+
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:11,color:COLORS.textMuted,marginBottom:6,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase" }}>Password</div>
+            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 6 characters" style={inputStyle}/>
+          </div>
+
+          {mode==="signup" && (
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:11,color:COLORS.textMuted,marginBottom:6,fontWeight:700,letterSpacing:0.8,textTransform:"uppercase" }}>Confirm Password</div>
+              <input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} placeholder="Type password again" style={inputStyle}/>
+            </div>
+          )}
+
+          {error && (
+            <div style={{ background:COLORS.red+"18", border:`1px solid ${COLORS.red}44`, borderRadius:8, padding:"10px 14px", fontSize:13, color:COLORS.red, marginBottom:14 }}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          <button onClick={handleSubmit} style={{ width:"100%", background:COLORS.accent, color:"#fff", border:"none", borderRadius:10, padding:"12px", fontSize:15, fontWeight:700, cursor:"pointer", fontFamily:"inherit", marginTop:4 }}>
+            {mode==="login" ? "Log In →" : "Create Account →"}
+          </button>
+
+          <div style={{ textAlign:"center", marginTop:18, fontSize:13, color:COLORS.textMuted }}>
+            {mode==="login" ? "Don't have an account? " : "Already have an account? "}
+            <span onClick={()=>{ setMode(mode==="login"?"signup":"login"); setError(""); }} style={{ color:COLORS.accent, cursor:"pointer", fontWeight:600 }}>
+              {mode==="login"?"Sign Up":"Log In"}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ textAlign:"center", marginTop:20, fontSize:12, color:COLORS.textFaint }}>
+          Your data is saved in this browser. Use the same browser to keep your tasks.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Countdown hook ── */
 function useNow() {
   const [now, setNow] = useState(new Date());
@@ -153,200 +291,148 @@ function useNow() {
   return now;
 }
 
-function formatCountdown(ms) {
-  if (ms<=0) return "Now";
-  const totalSec = Math.floor(ms/1000);
-  const d = Math.floor(totalSec/86400);
-  const h = Math.floor((totalSec%86400)/3600);
-  const m = Math.floor((totalSec%3600)/60);
-  const s = totalSec%60;
-  if (d>0) return `${d}d ${h}h`;
-  if (h>0) return `${h}h ${m}m`;
-  if (m>0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
 /* ── Dashboard ── */
-function Dashboard({ events, today, onEdit, onToggle, onAdd }) {
+function Dashboard({ events, today, user, onEdit, onToggle, onAdd }) {
   const now = useNow();
-
-  // Next upcoming event (any type, not done, soonest)
-  const upcoming = events
-    .filter(ev=>!ev.done)
-    .map(ev=>({ ev, ms:msUntil(ev) }))
-    .filter(({ms})=>ms<Infinity)
-    .sort((a,b)=>a.ms-b.ms);
-
-  const nextEvent = upcoming[0]?.ev || null;
-  const nextEventMs = upcoming[0]?.ms || 0;
-
-  // Next task specifically
-  const nextTask = upcoming.find(({ev})=>ev.type==="task")?.ev || null;
-  const nextTaskMs = upcoming.find(({ev})=>ev.type==="task")?.ms || 0;
-
-  // Today's events
+  const upcoming = events.filter(ev=>!ev.done).map(ev=>({ ev, ms:msUntil(ev) })).filter(({ms})=>ms<Infinity).sort((a,b)=>a.ms-b.ms);
+  const nextEvent = upcoming[0]?.ev||null;
+  const nextEventMs = upcoming[0]?.ms||0;
+  const nextTask = upcoming.find(({ev})=>ev.type==="task")?.ev||null;
+  const nextTaskMs = upcoming.find(({ev})=>ev.type==="task")?.ms||0;
   const todayEvs = eventsForDay(events, today).sort((a,b)=>a.time.localeCompare(b.time));
   const todayPending = todayEvs.filter(ev=>!ev.done);
   const todayDone    = todayEvs.filter(ev=>ev.done);
-
-  // Stats
-  const allTasks     = events.filter(e=>e.type==="task");
-  const doneTasks    = allTasks.filter(t=>t.done);
+  const allTasks  = events.filter(e=>e.type==="task");
+  const doneTasks = allTasks.filter(t=>t.done);
   const pendingTasks = allTasks.filter(t=>!t.done);
-  const highPri      = pendingTasks.filter(t=>t.priority==="high");
-
-  // Category breakdown for today
-  const catCounts = {};
-  todayEvs.forEach(ev=>{ catCounts[ev.category]=(catCounts[ev.category]||0)+1; });
-
-  const greeting = ()=>{
-    const h=now.getHours();
-    if(h<12) return "Good morning";
-    if(h<17) return "Good afternoon";
-    return "Good evening";
-  };
+  const highPri   = pendingTasks.filter(t=>t.priority==="high");
+  const greeting  = ()=>{ const h=now.getHours(); if(h<12)return"Good morning"; if(h<17)return"Good afternoon"; return"Good evening"; };
 
   return (
     <div>
-      {/* Hero greeting */}
-      <div style={{ background:`linear-gradient(135deg, ${COLORS.accent}22 0%, ${COLORS.card} 60%)`, border:`1px solid ${COLORS.border}`, borderRadius:20, padding:"28px 28px 24px", marginBottom:20, position:"relative", overflow:"hidden" }}>
-        <div style={{ position:"absolute", top:-30, right:-30, width:120, height:120, borderRadius:"50%", background:COLORS.accent+"15", pointerEvents:"none" }}/>
-        <div style={{ position:"absolute", top:10, right:10, width:60, height:60, borderRadius:"50%", background:COLORS.accent+"10", pointerEvents:"none" }}/>
-        <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:4 }}>{DAYS_FULL[today.getDay()]}, {MONTHS[today.getMonth()]} {today.getDate()}, {today.getFullYear()}</div>
-        <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, marginBottom:6 }}>{greeting()} 👋</div>
-        <div style={{ fontSize:14, color:COLORS.textMuted }}>
-          You have <span style={{ color:COLORS.accent, fontWeight:700 }}>{todayPending.length}</span> item{todayPending.length!==1?"s":""} left today
-          {highPri.length>0 && <> · <span style={{ color:COLORS.red, fontWeight:700 }}>{highPri.length} high priority</span></>}
+      {/* Hero */}
+      <div style={{ background:`linear-gradient(135deg,${COLORS.accent}22 0%,${COLORS.card} 60%)`,border:`1px solid ${COLORS.border}`,borderRadius:20,padding:"28px 28px 24px",marginBottom:20,position:"relative",overflow:"hidden" }}>
+        <div style={{ position:"absolute",top:-30,right:-30,width:120,height:120,borderRadius:"50%",background:COLORS.accent+"15",pointerEvents:"none" }}/>
+        <div style={{ fontSize:13,color:COLORS.textMuted,marginBottom:4 }}>{DAYS_FULL[today.getDay()]}, {MONTHS[today.getMonth()]} {today.getDate()}, {today.getFullYear()}</div>
+        <div style={{ fontFamily:"'Playfair Display',serif",fontSize:26,marginBottom:6 }}>{greeting()}, <span style={{ color:COLORS.accent }}>{user.name.split(" ")[0]}</span> 👋</div>
+        <div style={{ fontSize:14,color:COLORS.textMuted }}>
+          You have <span style={{ color:COLORS.accent,fontWeight:700 }}>{todayPending.length}</span> item{todayPending.length!==1?"s":""} left today
+          {highPri.length>0&&<> · <span style={{ color:COLORS.red,fontWeight:700 }}>{highPri.length} high priority</span></>}
         </div>
-        <div style={{ marginTop:16 }}>
-          <Btn onClick={onAdd} style={{ padding:"8px 18px", fontSize:13 }}>+ Quick Add</Btn>
-        </div>
+        <div style={{ marginTop:16 }}><Btn onClick={onAdd} style={{ padding:"8px 18px",fontSize:13 }}>+ Quick Add</Btn></div>
       </div>
 
-      {/* Stat row */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:20 }}>
+      {/* Stats */}
+      <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20 }}>
         {[
-          { label:"Today's Items",   value:todayEvs.length,    color:COLORS.accent, icon:"📅" },
-          { label:"Pending Tasks",   value:pendingTasks.length, color:COLORS.yellow, icon:"⏳" },
-          { label:"Completed",       value:doneTasks.length,    color:COLORS.green,  icon:"✅" },
-          { label:"High Priority",   value:highPri.length,      color:COLORS.red,    icon:"🔴" },
+          { label:"Today's Items",  value:todayEvs.length,     color:COLORS.accent, icon:"📅" },
+          { label:"Pending Tasks",  value:pendingTasks.length, color:COLORS.yellow, icon:"⏳" },
+          { label:"Completed",      value:doneTasks.length,    color:COLORS.green,  icon:"✅" },
+          { label:"High Priority",  value:highPri.length,      color:COLORS.red,    icon:"🔴" },
         ].map(s=>(
-          <div key={s.label} style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:14, padding:"14px 16px", textAlign:"center" }}>
-            <div style={{ fontSize:22, marginBottom:4 }}>{s.icon}</div>
-            <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, color:s.color, fontWeight:700, lineHeight:1 }}>{s.value}</div>
-            <div style={{ fontSize:11, color:COLORS.textMuted, marginTop:4 }}>{s.label}</div>
+          <div key={s.label} style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderRadius:14,padding:"14px 16px",textAlign:"center" }}>
+            <div style={{ fontSize:22,marginBottom:4 }}>{s.icon}</div>
+            <div style={{ fontFamily:"'Playfair Display',serif",fontSize:24,color:s.color,fontWeight:700,lineHeight:1 }}>{s.value}</div>
+            <div style={{ fontSize:11,color:COLORS.textMuted,marginTop:4 }}>{s.label}</div>
           </div>
         ))}
       </div>
 
-      {/* Spotlight: Next Up */}
-      {nextEvent && (
+      {/* Next Up spotlight */}
+      {nextEvent&&(
         <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:COLORS.textMuted, letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>⚡ Next Up</div>
-          <div onClick={()=>onEdit(nextEvent)} style={{ background:COLORS.card, border:`2px solid ${(CATEGORIES[nextEvent.category]||CATEGORIES.work).color}`, borderRadius:16, padding:"18px 20px", cursor:"pointer", position:"relative", overflow:"hidden" }}>
-            <div style={{ position:"absolute", top:0, right:0, width:80, height:80, borderRadius:"50%", background:(CATEGORIES[nextEvent.category]||CATEGORIES.work).color+"12", transform:"translate(20px,-20px)", pointerEvents:"none" }}/>
-            <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12 }}>
+          <div style={{ fontSize:11,fontWeight:700,color:COLORS.textMuted,letterSpacing:1,textTransform:"uppercase",marginBottom:10 }}>⚡ Next Up</div>
+          <div onClick={()=>onEdit(nextEvent)} style={{ background:COLORS.card,border:`2px solid ${(CATEGORIES[nextEvent.category]||CATEGORIES.work).color}`,borderRadius:16,padding:"18px 20px",cursor:"pointer",position:"relative",overflow:"hidden" }}>
+            <div style={{ position:"absolute",top:0,right:0,width:80,height:80,borderRadius:"50%",background:(CATEGORIES[nextEvent.category]||CATEGORIES.work).color+"12",transform:"translate(20px,-20px)",pointerEvents:"none" }}/>
+            <div style={{ display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12 }}>
               <div style={{ flex:1 }}>
-                <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
+                <div style={{ display:"flex",gap:8,alignItems:"center",marginBottom:8 }}>
                   <CatPill cat={nextEvent.category}/>
                   <Badge color={PRIORITY[nextEvent.priority]?.color}>{PRIORITY[nextEvent.priority]?.label}</Badge>
-                  {nextEvent.type==="task"&&<Badge color={COLORS.accent}>Task</Badge>}
                 </div>
-                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:20, marginBottom:4 }}>{nextEvent.title}</div>
-                <div style={{ fontSize:13, color:COLORS.textMuted }}>
-                  {isSameDay(new Date(nextEvent.date+"T00:00:00"), today) ? "Today" : new Date(nextEvent.date+"T00:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
-                  {nextEvent.time && ` · ${formatTime(nextEvent.time)}`}
+                <div style={{ fontFamily:"'Playfair Display',serif",fontSize:20,marginBottom:4 }}>{nextEvent.title}</div>
+                <div style={{ fontSize:13,color:COLORS.textMuted }}>
+                  {isSameDay(new Date(nextEvent.date+"T00:00:00"),today)?"Today":new Date(nextEvent.date+"T00:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+                  {nextEvent.time&&` · ${formatTime(nextEvent.time)}`}
                 </div>
-                {nextEvent.notes&&<div style={{ fontSize:12,color:COLORS.textMuted,marginTop:6 }}>{nextEvent.notes}</div>}
               </div>
-              <div style={{ textAlign:"right", flexShrink:0 }}>
-                <div style={{ fontFamily:"'Playfair Display',serif", fontSize:28, color:(CATEGORIES[nextEvent.category]||CATEGORIES.work).color, fontWeight:700, lineHeight:1 }}>{formatCountdown(nextEventMs-((new Date())-now))}</div>
-                <div style={{ fontSize:11, color:COLORS.textMuted, marginTop:2 }}>from now</div>
-                <div onClick={e=>{e.stopPropagation();onToggle(nextEvent.id);}} style={{ marginTop:10, background:COLORS.green+"22", color:COLORS.green, border:`1px solid ${COLORS.green}44`, borderRadius:8, padding:"5px 12px", fontSize:12, fontWeight:700, cursor:"pointer", display:"inline-block" }}>Mark done ✓</div>
+              <div style={{ textAlign:"right",flexShrink:0 }}>
+                <div style={{ fontFamily:"'Playfair Display',serif",fontSize:28,color:(CATEGORIES[nextEvent.category]||CATEGORIES.work).color,fontWeight:700,lineHeight:1 }}>{formatCountdown(nextEventMs)}</div>
+                <div style={{ fontSize:11,color:COLORS.textMuted,marginTop:2 }}>from now</div>
+                <div onClick={e=>{e.stopPropagation();onToggle(nextEvent.id);}} style={{ marginTop:10,background:COLORS.green+"22",color:COLORS.green,border:`1px solid ${COLORS.green}44`,borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",display:"inline-block" }}>Mark done ✓</div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Next Task (if different from next event) */}
-      {nextTask && nextTask.id !== nextEvent?.id && (
+      {/* Next Task */}
+      {nextTask&&nextTask.id!==nextEvent?.id&&(
         <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:COLORS.textMuted, letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>📋 Next Task Due</div>
-          <div onClick={()=>onEdit(nextTask)} style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderLeft:`4px solid ${(CATEGORIES[nextTask.category]||CATEGORIES.work).color}`, borderRadius:12, padding:"14px 16px", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 }}>
+          <div style={{ fontSize:11,fontWeight:700,color:COLORS.textMuted,letterSpacing:1,textTransform:"uppercase",marginBottom:10 }}>📋 Next Task Due</div>
+          <div onClick={()=>onEdit(nextTask)} style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderLeft:`4px solid ${(CATEGORIES[nextTask.category]||CATEGORIES.work).color}`,borderRadius:12,padding:"14px 16px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12 }}>
             <div>
-              <div style={{ fontWeight:600, marginBottom:5 }}>{nextTask.title}</div>
-              <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+              <div style={{ fontWeight:600,marginBottom:5 }}>{nextTask.title}</div>
+              <div style={{ display:"flex",gap:8,flexWrap:"wrap",alignItems:"center" }}>
                 <CatPill cat={nextTask.category}/>
                 <Badge color={PRIORITY[nextTask.priority]?.color}>{PRIORITY[nextTask.priority]?.label}</Badge>
-                <span style={{ fontSize:12, color:COLORS.textMuted }}>📅 {nextTask.date}{nextTask.time?` · ${formatTime(nextTask.time)}`:""}</span>
+                <span style={{ fontSize:12,color:COLORS.textMuted }}>📅 {nextTask.date}{nextTask.time?` · ${formatTime(nextTask.time)}`:""}</span>
               </div>
             </div>
-            <div style={{ textAlign:"right", flexShrink:0 }}>
-              <div style={{ fontSize:20, fontWeight:700, color:COLORS.yellow }}>{formatCountdown(nextTaskMs)}</div>
-              <div style={{ fontSize:11, color:COLORS.textMuted }}>remaining</div>
+            <div style={{ textAlign:"right",flexShrink:0 }}>
+              <div style={{ fontSize:20,fontWeight:700,color:COLORS.yellow }}>{formatCountdown(nextTaskMs)}</div>
+              <div style={{ fontSize:11,color:COLORS.textMuted }}>remaining</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Today's full schedule */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+      {/* Today + Coming Soon */}
+      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:16 }}>
         <div>
-          <div style={{ fontSize:11, fontWeight:700, color:COLORS.textMuted, letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>📅 Today's Schedule</div>
+          <div style={{ fontSize:11,fontWeight:700,color:COLORS.textMuted,letterSpacing:1,textTransform:"uppercase",marginBottom:10 }}>📅 Today's Schedule</div>
           {todayPending.length===0
-            ? <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:12, padding:"20px", textAlign:"center", color:COLORS.textFaint, fontSize:13 }}>All clear! 🎉</div>
-            : <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-                {todayPending.map(ev=><EventCard key={ev.id} ev={ev} onClick={()=>onEdit(ev)} onToggle={onToggle}/>)}
-              </div>
+            ?<div style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderRadius:12,padding:20,textAlign:"center",color:COLORS.textFaint,fontSize:13 }}>All clear! 🎉</div>
+            :<div style={{ display:"flex",flexDirection:"column",gap:7 }}>{todayPending.map(ev=><EventCard key={ev.id} ev={ev} onClick={()=>onEdit(ev)} onToggle={onToggle}/>)}</div>
           }
-          {todayDone.length>0&&(
-            <div style={{ marginTop:8, opacity:0.45 }}>
-              <div style={{ fontSize:10, color:COLORS.textMuted, marginBottom:6 }}>Done today ({todayDone.length})</div>
-              {todayDone.map(ev=><EventCard key={ev.id} ev={ev} onClick={()=>onEdit(ev)} onToggle={onToggle}/>)}
-            </div>
-          )}
+          {todayDone.length>0&&<div style={{ marginTop:8,opacity:0.4 }}>{todayDone.map(ev=><EventCard key={ev.id} ev={ev} onClick={()=>onEdit(ev)} onToggle={onToggle}/>)}</div>}
         </div>
-
-        {/* Upcoming next 5 */}
         <div>
-          <div style={{ fontSize:11, fontWeight:700, color:COLORS.textMuted, letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>🔮 Coming Soon</div>
-          {upcoming.slice(0,6).filter(({ev})=>!isSameDay(new Date(ev.date+"T00:00:00"),today)).slice(0,5).length===0
-            ? <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:12, padding:"20px", textAlign:"center", color:COLORS.textFaint, fontSize:13 }}>Nothing upcoming</div>
-            : <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-                {upcoming.filter(({ev})=>{ const d=new Date(); d.setHours(23,59,59); return new Date(ev.date+"T"+(ev.time||"00:00")+":00")>d||ev.recur!=="none"; }).slice(0,5).map(({ev,ms})=>{
-                  const cat=CATEGORIES[ev.category]||CATEGORIES.work;
-                  const evDate=new Date(ev.date+"T00:00:00");
-                  const label=isSameDay(evDate,today)?"Later today":evDate.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
-                  return (
-                    <div key={ev.id} onClick={()=>onEdit(ev)} style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderLeft:`3px solid ${cat.color}`, borderRadius:10, padding:"10px 13px", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}>
-                      <div style={{ minWidth:0 }}>
-                        <div style={{ fontSize:13, fontWeight:600, marginBottom:3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{ev.title}</div>
-                        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
-                          <span style={{ fontSize:10, color:COLORS.textMuted }}>{label}</span>
-                          <CatPill cat={ev.category}/>
-                        </div>
+          <div style={{ fontSize:11,fontWeight:700,color:COLORS.textMuted,letterSpacing:1,textTransform:"uppercase",marginBottom:10 }}>🔮 Coming Soon</div>
+          {upcoming.filter(({ev})=>!isSameDay(new Date(ev.date+"T00:00:00"),today)).slice(0,5).length===0
+            ?<div style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderRadius:12,padding:20,textAlign:"center",color:COLORS.textFaint,fontSize:13 }}>Nothing upcoming</div>
+            :<div style={{ display:"flex",flexDirection:"column",gap:7 }}>
+              {upcoming.filter(({ev})=>{const d=new Date();d.setHours(23,59,59);return new Date(ev.date+"T"+(ev.time||"00:00")+":00")>d||ev.recur!=="none";}).slice(0,5).map(({ev,ms})=>{
+                const cat=CATEGORIES[ev.category]||CATEGORIES.work;
+                const evDate=new Date(ev.date+"T00:00:00");
+                const label=isSameDay(evDate,today)?"Later today":evDate.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
+                return (
+                  <div key={ev.id} onClick={()=>onEdit(ev)} style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderLeft:`3px solid ${cat.color}`,borderRadius:10,padding:"10px 13px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10 }}>
+                    <div style={{ minWidth:0 }}>
+                      <div style={{ fontSize:13,fontWeight:600,marginBottom:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{ev.title}</div>
+                      <div style={{ display:"flex",gap:6,alignItems:"center" }}>
+                        <span style={{ fontSize:10,color:COLORS.textMuted }}>{label}</span>
+                        <CatPill cat={ev.category}/>
                       </div>
-                      <div style={{ fontSize:12, fontWeight:700, color:cat.color, flexShrink:0 }}>{formatCountdown(ms)}</div>
                     </div>
-                  );
-                })}
-              </div>
+                    <div style={{ fontSize:12,fontWeight:700,color:cat.color,flexShrink:0 }}>{formatCountdown(ms)}</div>
+                  </div>
+                );
+              })}
+            </div>
           }
-
-          {/* Progress ring / summary */}
           {allTasks.length>0&&(
-            <div style={{ marginTop:12, background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:12, padding:"14px 16px" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
-                <span style={{ fontSize:13, color:COLORS.textMuted }}>Task completion</span>
-                <span style={{ fontSize:13, fontWeight:700, color:COLORS.accent }}>{Math.round(doneTasks.length/allTasks.length*100)}%</span>
+            <div style={{ marginTop:12,background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderRadius:12,padding:"14px 16px" }}>
+              <div style={{ display:"flex",justifyContent:"space-between",marginBottom:7 }}>
+                <span style={{ fontSize:13,color:COLORS.textMuted }}>Task completion</span>
+                <span style={{ fontSize:13,fontWeight:700,color:COLORS.accent }}>{Math.round(doneTasks.length/allTasks.length*100)}%</span>
               </div>
-              <div style={{ height:6, borderRadius:99, background:COLORS.border }}>
-                <div style={{ height:"100%", borderRadius:99, background:`linear-gradient(90deg,${COLORS.accent},${COLORS.green})`, width:`${doneTasks.length/allTasks.length*100}%`, transition:"width 0.4s" }}/>
+              <div style={{ height:6,borderRadius:99,background:COLORS.border }}>
+                <div style={{ height:"100%",borderRadius:99,background:`linear-gradient(90deg,${COLORS.accent},${COLORS.green})`,width:`${doneTasks.length/allTasks.length*100}%`,transition:"width 0.4s" }}/>
               </div>
-              <div style={{ display:"flex", justifyContent:"space-between", marginTop:6 }}>
-                <span style={{ fontSize:11, color:COLORS.textMuted }}>{doneTasks.length} done</span>
-                <span style={{ fontSize:11, color:COLORS.textMuted }}>{pendingTasks.length} left</span>
+              <div style={{ display:"flex",justifyContent:"space-between",marginTop:6 }}>
+                <span style={{ fontSize:11,color:COLORS.textMuted }}>{doneTasks.length} done</span>
+                <span style={{ fontSize:11,color:COLORS.textMuted }}>{pendingTasks.length} left</span>
               </div>
             </div>
           )}
@@ -357,8 +443,29 @@ function Dashboard({ events, today, onEdit, onToggle, onAdd }) {
 }
 
 /* ══════════════ MAIN APP ══════════════ */
+const SAMPLE_EVENTS = (today) => [
+  { id:genId(),title:"Team standup",     date:dateStr(today),time:"09:00",type:"schedule",priority:"medium",category:"work",   recur:"daily",  done:false,notes:"" },
+  { id:genId(),title:"Submit assignment", date:dateStr(today),time:"17:00",type:"task",    priority:"high",  category:"school", recur:"none",   done:false,notes:"" },
+  { id:genId(),title:"Gym session",       date:dateStr(today),time:"07:00",type:"schedule",priority:"low",   category:"health", recur:"weekly", done:false,notes:"" },
+  { id:genId(),title:"Sunday service",    date:dateStr(today),time:"10:00",type:"schedule",priority:"medium",category:"church", recur:"weekly", done:false,notes:"" },
+  { id:genId(),title:"Family dinner",     date:dateStr(today),time:"19:00",type:"schedule",priority:"medium",category:"family", recur:"monthly",done:false,notes:"" },
+];
+
 export default function App() {
   const today = new Date();
+  const [user,      setUser]      = useState(null);    // logged-in user object
+  const [authReady, setAuthReady] = useState(false);   // prevents flash
+
+  // Check for existing session on load
+  useEffect(()=>{
+    const uid = LS.getSession();
+    if (uid) {
+      const users = LS.getUsers();
+      if (users[uid]) setUser(users[uid]);
+    }
+    setAuthReady(true);
+  },[]);
+
   const [tab,       setTab]       = useState("dashboard");
   const [calView,   setCalView]   = useState("month");
   const [curMonth,  setCurMonth]  = useState(new Date(today.getFullYear(),today.getMonth(),1));
@@ -371,22 +478,34 @@ export default function App() {
   const blank = { title:"",date:dateStr(today),time:"",type:"task",priority:"medium",category:"work",recur:"none",notes:"" };
   const [form, setForm] = useState(blank);
 
-  const [events, setEvents] = useState([
-    { id:genId(),title:"Team standup",     date:dateStr(today),time:"09:00",type:"schedule",priority:"medium",category:"work",   recur:"daily",  done:false,notes:"" },
-    { id:genId(),title:"Submit assignment", date:dateStr(today),time:"17:00",type:"task",    priority:"high",  category:"school", recur:"none",   done:false,notes:"" },
-    { id:genId(),title:"Gym session",       date:dateStr(today),time:"07:00",type:"schedule",priority:"low",   category:"health", recur:"weekly", done:false,notes:"" },
-    { id:genId(),title:"Sunday service",    date:dateStr(today),time:"10:00",type:"schedule",priority:"medium",category:"church", recur:"weekly", done:false,notes:"" },
-    { id:genId(),title:"Family dinner",     date:dateStr(today),time:"19:00",type:"schedule",priority:"medium",category:"family", recur:"monthly",done:false,notes:"" },
-  ]);
+  const [events, setEventsRaw] = useState([]);
+
+  // Load events from localStorage when user logs in
+  useEffect(()=>{
+    if (!user) return;
+    const saved = LS.getEvents(user.uid);
+    if (saved) { setEventsRaw(saved); }
+    else { const sample = SAMPLE_EVENTS(today); setEventsRaw(sample); LS.saveEvents(user.uid, sample); }
+  },[user?.uid]);
+
+  // Save events to localStorage whenever they change
+  function setEvents(updater) {
+    setEventsRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (user) LS.saveEvents(user.uid, next);
+      return next;
+    });
+  }
 
   useEffect(()=>{
+    if (!user) return;
     const t=setInterval(()=>{
       const now=new Date();
       const nowStr=`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
       events.forEach(ev=>{ if(occursOn(ev,now)&&ev.time===nowStr&&!ev.done) showToast(`⏰ ${ev.title}`); });
     },30000);
     return()=>clearInterval(t);
-  },[events]);
+  },[events, user]);
 
   function showToast(msg){ setToastMsg(msg); setTimeout(()=>setToastMsg(null),4000); }
   function openAdd(date){ setEditItem(null); setForm({...blank,date:date||dateStr(selDay)}); setModal(true); }
@@ -396,6 +515,14 @@ export default function App() {
   function toggleDone(id){ setEvents(e=>e.map(ev=>ev.id===id?{...ev,done:!ev.done}:ev)); }
   function setF(k){ return e=>setForm(f=>({...f,[k]:e.target.value})); }
 
+  function handleLogout() {
+    LS.clearSession();
+    setUser(null);
+    setEventsRaw([]);
+    setTab("dashboard");
+  }
+
+  // Calendar grid
   const firstDay    = curMonth.getDay();
   const daysInMonth = new Date(curMonth.getFullYear(),curMonth.getMonth()+1,0).getDate();
   const calCells    = [...Array(firstDay).fill(null),...Array.from({length:daysInMonth},(_,i)=>i+1)];
@@ -408,8 +535,14 @@ export default function App() {
   const pending   = allTasks.filter(t=>!t.done);
   const completed = allTasks.filter(t=>t.done);
 
-  const navS = t=>({ padding:"7px 15px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,background:tab===t?COLORS.accent:"transparent",color:tab===t?"#fff":COLORS.textMuted,border:"none",fontFamily:"inherit",transition:"all 0.18s" });
+  const navS = t=>({ padding:"7px 14px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,background:tab===t?COLORS.accent:"transparent",color:tab===t?"#fff":COLORS.textMuted,border:"none",fontFamily:"inherit",transition:"all 0.18s" });
   const viewS= v=>({ padding:"5px 14px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:600,background:calView===v?COLORS.accent+"33":"transparent",color:calView===v?COLORS.accent:COLORS.textMuted,border:`1px solid ${calView===v?COLORS.accent:COLORS.border}`,fontFamily:"inherit" });
+
+  // Show nothing until we know if user is logged in
+  if (!authReady) return null;
+
+  // Show login screen if no user
+  if (!user) return <AuthScreen onLogin={setUser}/>;
 
   return (
     <div style={{ minHeight:"100vh",background:COLORS.bg,color:COLORS.text,fontFamily:"'DM Sans',sans-serif" }}>
@@ -422,15 +555,24 @@ export default function App() {
         <div style={{ maxWidth:980,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,gap:12 }}>
           <div style={{ fontFamily:"'Playfair Display',serif",fontSize:20,whiteSpace:"nowrap" }}><span style={{ color:COLORS.accent }}>◆</span> FocusFlow</div>
           <div style={{ display:"flex",gap:2 }}>
-            <button onClick={()=>setTab("dashboard")} style={navS("dashboard")}>🏠 Dashboard</button>
+            <button onClick={()=>setTab("dashboard")} style={navS("dashboard")}>🏠</button>
             <button onClick={()=>setTab("calendar")}  style={navS("calendar")}>📅 Calendar</button>
             <button onClick={()=>setTab("tasks")}     style={navS("tasks")}>✅ Tasks</button>
           </div>
-          <Btn onClick={()=>openAdd()} style={{ padding:"7px 14px",fontSize:13,whiteSpace:"nowrap" }}>+ Add</Btn>
+          <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+            <Btn onClick={()=>openAdd()} style={{ padding:"7px 14px",fontSize:13,whiteSpace:"nowrap" }}>+ Add</Btn>
+            {/* User avatar + logout */}
+            <div style={{ display:"flex",alignItems:"center",gap:8 }}>
+              <div style={{ width:32,height:32,borderRadius:"50%",background:COLORS.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff",flexShrink:0 }}>
+                {user.name[0].toUpperCase()}
+              </div>
+              <button onClick={handleLogout} style={{ background:"transparent",border:"none",color:COLORS.textMuted,fontSize:12,cursor:"pointer",fontFamily:"inherit",padding:"4px 8px",borderRadius:6,border:`1px solid ${COLORS.border}` }}>Logout</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Category filter (hidden on dashboard) */}
+      {/* Category filter */}
       {tab!=="dashboard"&&(
         <div style={{ borderBottom:`1px solid ${COLORS.border}`,padding:"8px 20px",overflowX:"auto" }}>
           <div style={{ maxWidth:980,margin:"0 auto",display:"flex",gap:6,alignItems:"center" }}>
@@ -444,12 +586,10 @@ export default function App() {
 
       <div style={{ maxWidth:980,margin:"0 auto",padding:"24px 20px" }}>
 
-        {/* ── DASHBOARD ── */}
         {tab==="dashboard"&&(
-          <Dashboard events={events} today={today} onEdit={openEdit} onToggle={toggleDone} onAdd={()=>openAdd()}/>
+          <Dashboard events={events} today={today} user={user} onEdit={openEdit} onToggle={toggleDone} onAdd={()=>openAdd()}/>
         )}
 
-        {/* ── CALENDAR ── */}
         {tab==="calendar"&&(
           <div>
             <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:10 }}>
@@ -475,8 +615,7 @@ export default function App() {
                   <div style={{ display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2 }}>
                     {calCells.map((d,i)=>{
                       const cd=d?new Date(curMonth.getFullYear(),curMonth.getMonth(),d):null;
-                      const isToday=cd&&isSameDay(cd,today);
-                      const isSel=cd&&isSameDay(cd,selDay);
+                      const isToday=cd&&isSameDay(cd,today); const isSel=cd&&isSameDay(cd,selDay);
                       const evs=cd?eventsForDay(events,cd).filter(ev=>filterCat==="all"||ev.category===filterCat):[];
                       return (
                         <div key={i} onClick={()=>cd&&setSelDay(cd)} style={{ minHeight:68,borderRadius:10,padding:6,background:isSel?COLORS.accentSoft:d?COLORS.surface:"transparent",border:isSel?`1.5px solid ${COLORS.accent}`:isToday?`1.5px solid ${COLORS.accent}55`:`1px solid ${COLORS.border}`,cursor:d?"pointer":"default",transition:"all 0.15s" }}>
@@ -501,10 +640,8 @@ export default function App() {
                       </div>
                       <Btn onClick={()=>openAdd(selStr)} style={{ padding:"5px 12px",fontSize:12 }}>+ Add</Btn>
                     </div>
-                    {selEvents.length===0
-                      ?<div style={{ textAlign:"center",color:COLORS.textFaint,fontSize:13,padding:"20px 0" }}>Nothing scheduled</div>
-                      :<div style={{ display:"flex",flexDirection:"column",gap:7 }}>{selEvents.map(ev=><EventCard key={ev.id} ev={ev} onClick={()=>openEdit(ev)} onToggle={toggleDone}/>)}</div>
-                    }
+                    {selEvents.length===0?<div style={{ textAlign:"center",color:COLORS.textFaint,fontSize:13,padding:"20px 0" }}>Nothing scheduled</div>
+                      :<div style={{ display:"flex",flexDirection:"column",gap:7 }}>{selEvents.map(ev=><EventCard key={ev.id} ev={ev} onClick={()=>openEdit(ev)} onToggle={toggleDone}/>)}</div>}
                   </div>
                   <div style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderRadius:12,padding:14 }}>
                     <div style={{ fontSize:10,fontWeight:700,color:COLORS.textMuted,letterSpacing:1,textTransform:"uppercase",marginBottom:10 }}>Categories</div>
@@ -524,8 +661,7 @@ export default function App() {
             {calView==="agenda"&&(
               <div>
                 <div style={{ fontSize:13,color:COLORS.textMuted,marginBottom:18 }}>Upcoming — next 30 days</div>
-                {agendaDays.length===0
-                  ?<div style={{ textAlign:"center",color:COLORS.textMuted,padding:"60px 0" }}>No upcoming events</div>
+                {agendaDays.length===0?<div style={{ textAlign:"center",color:COLORS.textMuted,padding:"60px 0" }}>No upcoming events</div>
                   :agendaDays.map(({date,evs})=>{
                     const isT=isSameDay(date,today);
                     return (
@@ -547,7 +683,6 @@ export default function App() {
           </div>
         )}
 
-        {/* ── TASKS ── */}
         {tab==="tasks"&&(
           <div>
             <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:22 }}>
@@ -611,7 +746,7 @@ export default function App() {
         )}
       </div>
 
-      {/* ── MODAL ── */}
+      {/* Modal */}
       <Modal open={modal} onClose={()=>setModal(false)} title={editItem?"Edit Item":"Add New Item"}>
         <Input label="Title" value={form.title} onChange={setF("title")} placeholder="What's this about?"/>
         <Input label="Date" type="date" value={form.date} onChange={setF("date")}/>
