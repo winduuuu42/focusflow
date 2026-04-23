@@ -291,9 +291,69 @@ function useNow() {
   return now;
 }
 
+/* ── Stat Detail Drawer ── */
+function StatDrawer({ open, onClose, title, icon, color, items, onEdit, onToggle, emptyMsg }) {
+  if (!open) return null;
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{ position:"fixed",inset:0,background:"#00000066",zIndex:150 }}/>
+      {/* Panel */}
+      <div style={{ position:"fixed",top:0,right:0,bottom:0,width:"min(420px,100vw)",background:COLORS.card,borderLeft:`1px solid ${COLORS.border}`,zIndex:160,display:"flex",flexDirection:"column",boxShadow:"-16px 0 48px #00000055" }}>
+        {/* Header */}
+        <div style={{ padding:"20px 22px 16px",borderBottom:`1px solid ${COLORS.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0 }}>
+          <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+            <div style={{ width:36,height:36,borderRadius:10,background:color+"22",border:`1px solid ${color}44`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18 }}>{icon}</div>
+            <div>
+              <div style={{ fontFamily:"'Playfair Display',serif",fontSize:18,color:COLORS.text }}>{title}</div>
+              <div style={{ fontSize:12,color:COLORS.textMuted }}>{items.length} item{items.length!==1?"s":""}</div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"none",border:"none",color:COLORS.textMuted,fontSize:24,cursor:"pointer",lineHeight:1,padding:"4px" }}>×</button>
+        </div>
+        {/* List */}
+        <div style={{ flex:1,overflowY:"auto",padding:"16px 22px",display:"flex",flexDirection:"column",gap:9 }}>
+          {items.length===0
+            ? <div style={{ textAlign:"center",color:COLORS.textFaint,padding:"48px 0",fontSize:14 }}>{emptyMsg||"Nothing here yet."}</div>
+            : items.map(ev=>{
+                const cat=CATEGORIES[ev.category]||CATEGORIES.work;
+                return (
+                  <div key={ev.id} style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderLeft:`3px solid ${cat.color}`,borderRadius:10,padding:"12px 14px" }}>
+                    <div style={{ display:"flex",alignItems:"flex-start",gap:10 }}>
+                      {/* Checkbox */}
+                      <div onClick={()=>onToggle(ev.id)} style={{ width:18,height:18,borderRadius:4,border:`2px solid ${ev.done?COLORS.green:COLORS.border}`,background:ev.done?COLORS.green:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:2,cursor:"pointer" }}>
+                        {ev.done&&<span style={{ fontSize:10,color:"#fff" }}>✓</span>}
+                      </div>
+                      {/* Content */}
+                      <div style={{ flex:1,minWidth:0 }}>
+                        <div style={{ fontSize:14,fontWeight:600,color:ev.done?COLORS.textMuted:COLORS.text,textDecoration:ev.done?"line-through":"none",marginBottom:5 }}>{ev.title}</div>
+                        <div style={{ display:"flex",flexWrap:"wrap",gap:5,alignItems:"center" }}>
+                          {ev.date&&<span style={{ fontSize:11,color:COLORS.textMuted }}>📅 {ev.date}</span>}
+                          {ev.time&&<span style={{ fontSize:11,color:COLORS.textMuted }}>🕐 {formatTime(ev.time)}</span>}
+                          <CatPill cat={ev.category}/>
+                          <Badge color={PRIORITY[ev.priority]?.color}>{PRIORITY[ev.priority]?.label}</Badge>
+                          {ev.recur&&ev.recur!=="none"&&<span style={{ fontSize:10,color:COLORS.textMuted }}>🔁 {RECUR_OPTIONS.find(r=>r.value===ev.recur)?.label}</span>}
+                        </div>
+                        {ev.notes&&<div style={{ fontSize:12,color:COLORS.textMuted,marginTop:5,fontStyle:"italic" }}>{ev.notes}</div>}
+                      </div>
+                      {/* Edit btn */}
+                      <button onClick={()=>onEdit(ev)} style={{ background:"transparent",border:`1px solid ${COLORS.border}`,borderRadius:7,padding:"4px 10px",fontSize:12,color:COLORS.textMuted,cursor:"pointer",fontFamily:"inherit",flexShrink:0,whiteSpace:"nowrap" }}>Edit</button>
+                    </div>
+                  </div>
+                );
+              })
+          }
+        </div>
+      </div>
+    </>
+  );
+}
+
 /* ── Dashboard ── */
 function Dashboard({ events, today, user, onEdit, onToggle, onAdd }) {
   const now = useNow();
+  const [drawer, setDrawer] = useState(null); // null | "today" | "pending" | "completed" | "highpri"
+
   const upcoming = events.filter(ev=>!ev.done).map(ev=>({ ev, ms:msUntil(ev) })).filter(({ms})=>ms<Infinity).sort((a,b)=>a.ms-b.ms);
   const nextEvent = upcoming[0]?.ev||null;
   const nextEventMs = upcoming[0]?.ms||0;
@@ -308,8 +368,34 @@ function Dashboard({ events, today, user, onEdit, onToggle, onAdd }) {
   const highPri   = pendingTasks.filter(t=>t.priority==="high");
   const greeting  = ()=>{ const h=now.getHours(); if(h<12)return"Good morning"; if(h<17)return"Good afternoon"; return"Good evening"; };
 
+  const STAT_TILES = [
+    { key:"today",     label:"Today's Items",  value:todayEvs.length,     color:COLORS.accent, icon:"📅", items:todayEvs,      emptyMsg:"Nothing scheduled today." },
+    { key:"pending",   label:"Pending Tasks",  value:pendingTasks.length, color:COLORS.yellow, icon:"⏳", items:pendingTasks,  emptyMsg:"No pending tasks — you're all caught up! 🎉" },
+    { key:"completed", label:"Completed",      value:doneTasks.length,    color:COLORS.green,  icon:"✅", items:doneTasks,     emptyMsg:"No completed tasks yet." },
+    { key:"highpri",   label:"High Priority",  value:highPri.length,      color:COLORS.red,    icon:"🔴", items:highPri,       emptyMsg:"No high priority items. Nice!" },
+  ];
+
+  const activeDrawer = STAT_TILES.find(t=>t.key===drawer);
+
+  function handleEdit(ev) { setDrawer(null); setTimeout(()=>onEdit(ev), 50); }
+
   return (
     <div>
+      {/* Stat Drawer */}
+      {activeDrawer && (
+        <StatDrawer
+          open={true}
+          onClose={()=>setDrawer(null)}
+          title={activeDrawer.label}
+          icon={activeDrawer.icon}
+          color={activeDrawer.color}
+          items={activeDrawer.items}
+          onEdit={handleEdit}
+          onToggle={onToggle}
+          emptyMsg={activeDrawer.emptyMsg}
+        />
+      )}
+
       {/* Hero */}
       <div style={{ background:`linear-gradient(135deg,${COLORS.accent}22 0%,${COLORS.card} 60%)`,border:`1px solid ${COLORS.border}`,borderRadius:20,padding:"28px 28px 24px",marginBottom:20,position:"relative",overflow:"hidden" }}>
         <div style={{ position:"absolute",top:-30,right:-30,width:120,height:120,borderRadius:"50%",background:COLORS.accent+"15",pointerEvents:"none" }}/>
@@ -322,18 +408,17 @@ function Dashboard({ events, today, user, onEdit, onToggle, onAdd }) {
         <div style={{ marginTop:16 }}><Btn onClick={onAdd} style={{ padding:"8px 18px",fontSize:13 }}>+ Quick Add</Btn></div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — now clickable */}
       <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20 }}>
-        {[
-          { label:"Today's Items",  value:todayEvs.length,     color:COLORS.accent, icon:"📅" },
-          { label:"Pending Tasks",  value:pendingTasks.length, color:COLORS.yellow, icon:"⏳" },
-          { label:"Completed",      value:doneTasks.length,    color:COLORS.green,  icon:"✅" },
-          { label:"High Priority",  value:highPri.length,      color:COLORS.red,    icon:"🔴" },
-        ].map(s=>(
-          <div key={s.label} style={{ background:COLORS.surface,border:`1px solid ${COLORS.border}`,borderRadius:14,padding:"14px 16px",textAlign:"center" }}>
+        {STAT_TILES.map(s=>(
+          <div key={s.label} onClick={()=>setDrawer(s.key)}
+            style={{ background:COLORS.surface,border:`1px solid ${drawer===s.key?s.color:COLORS.border}`,borderRadius:14,padding:"14px 16px",textAlign:"center",cursor:"pointer",transition:"all 0.18s",transform:"translateY(0)",boxShadow:drawer===s.key?`0 0 0 2px ${s.color}44`:"none" }}
+            onMouseEnter={e=>{ e.currentTarget.style.borderColor=s.color; e.currentTarget.style.transform="translateY(-2px)"; }}
+            onMouseLeave={e=>{ e.currentTarget.style.borderColor=drawer===s.key?s.color:COLORS.border; e.currentTarget.style.transform="translateY(0)"; }}>
             <div style={{ fontSize:22,marginBottom:4 }}>{s.icon}</div>
             <div style={{ fontFamily:"'Playfair Display',serif",fontSize:24,color:s.color,fontWeight:700,lineHeight:1 }}>{s.value}</div>
             <div style={{ fontSize:11,color:COLORS.textMuted,marginTop:4 }}>{s.label}</div>
+            <div style={{ fontSize:10,color:s.color,marginTop:5,opacity:0.7 }}>tap to view ↗</div>
           </div>
         ))}
       </div>
